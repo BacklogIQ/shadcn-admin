@@ -5,9 +5,8 @@ import { zodResolver } from '@hookform/resolvers/zod'
 import { Link, useNavigate } from '@tanstack/react-router'
 import { Loader2, LogIn } from 'lucide-react'
 import { toast } from 'sonner'
-import { IconFacebook, IconGithub } from '@/assets/brand-icons'
-import { useAuthStore } from '@/stores/auth-store'
-import { sleep, cn } from '@/lib/utils'
+import { IconBitbucket, IconGithub, IconGoogle } from '@/assets/brand-icons'
+import { cn } from '@/lib/utils'
 import { Button } from '@/components/ui/button'
 import {
   Form,
@@ -19,6 +18,8 @@ import {
 } from '@/components/ui/form'
 import { Input } from '@/components/ui/input'
 import { PasswordInput } from '@/components/password-input'
+import { supabase } from '@/lib/supabase'
+import { syncUserToBackend } from '@/lib/api'
 
 const formSchema = z.object({
   email: z.email({
@@ -40,8 +41,8 @@ export function UserAuthForm({
   ...props
 }: UserAuthFormProps) {
   const [isLoading, setIsLoading] = useState(false)
+  const [isOAuthLoading, setIsOAuthLoading] = useState(false)
   const navigate = useNavigate()
-  const { auth } = useAuthStore()
 
   const form = useForm<z.infer<typeof formSchema>>({
     resolver: zodResolver(formSchema),
@@ -51,34 +52,58 @@ export function UserAuthForm({
     },
   })
 
-  function onSubmit(data: z.infer<typeof formSchema>) {
+  async function onSubmit(data: z.infer<typeof formSchema>) {
     setIsLoading(true)
 
-    toast.promise(sleep(2000), {
+    const p = (async () => {
+      const { data: signInData, error } = await supabase.auth.signInWithPassword({
+        email: data.email,
+        password: data.password,
+      })
+      if (error) throw error
+
+      // Sync user to backend
+      try {
+        await syncUserToBackend()
+        console.log('User synced to backend successfully')
+      } catch (syncError) {
+        // Don't fail login if backend sync fails, just log it
+        console.error('Failed to sync user to backend:', syncError)
+      }
+
+      // success: navigate to redirect or home
+      const targetPath = redirectTo || '/'
+      navigate({ to: targetPath, replace: true })
+      return signInData
+    })()
+
+    toast.promise(p, {
       loading: 'Signing in...',
       success: () => {
         setIsLoading(false)
-
-        // Mock successful authentication with expiry computed at success time
-        const mockUser = {
-          accountNo: 'ACC001',
-          email: data.email,
-          role: ['user'],
-          exp: Date.now() + 24 * 60 * 60 * 1000, // 24 hours from now
-        }
-
-        // Set user and access token
-        auth.setUser(mockUser)
-        auth.setAccessToken('mock-access-token')
-
-        // Redirect to the stored location or default to dashboard
-        const targetPath = redirectTo || '/'
-        navigate({ to: targetPath, replace: true })
-
         return `Welcome back, ${data.email}!`
       },
-      error: 'Error',
+      error: (err) => {
+        setIsLoading(false)
+        return err?.message || 'Sign in failed'
+      },
     })
+  }
+
+  async function handleOAuthSignIn(provider: 'github' | 'google' | 'bitbucket') {
+    setIsOAuthLoading(true)
+    try {
+      const { error } = await supabase.auth.signInWithOAuth({
+        provider,
+        options: {
+          redirectTo: `${window.location.origin}/auth-callback`,
+        },
+      })
+      if (error) throw error
+    } catch (error) {
+      setIsOAuthLoading(false)
+      toast.error(error instanceof Error ? error.message : 'OAuth sign in failed')
+    }
   }
 
   return (
@@ -136,12 +161,33 @@ export function UserAuthForm({
           </div>
         </div>
 
-        <div className='grid grid-cols-2 gap-2'>
-          <Button variant='outline' type='button' disabled={isLoading}>
-            <IconGithub className='h-4 w-4' /> GitHub
+        <div className='grid grid-cols-3 gap-2'>
+          <Button
+            variant='outline'
+            type='button'
+            disabled={isLoading || isOAuthLoading}
+            onClick={() => handleOAuthSignIn('github')}
+          >
+            <IconGithub className='h-4 w-4' />
+            GitHub
           </Button>
-          <Button variant='outline' type='button' disabled={isLoading}>
-            <IconFacebook className='h-4 w-4' /> Facebook
+          <Button
+            variant='outline'
+            type='button'
+            disabled={isLoading || isOAuthLoading}
+            onClick={() => handleOAuthSignIn('google')}
+          >
+            <IconGoogle className='h-4 w-4' />
+            Google
+          </Button>
+          <Button
+            variant='outline'
+            type='button'
+            disabled={isLoading || isOAuthLoading}
+            onClick={() => handleOAuthSignIn('bitbucket')}
+          >
+            <IconBitbucket className='h-4 w-4' />
+            Bitbucket
           </Button>
         </div>
       </form>

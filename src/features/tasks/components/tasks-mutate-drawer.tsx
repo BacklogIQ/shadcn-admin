@@ -1,7 +1,8 @@
 import { z } from 'zod'
+import { useState } from 'react'
 import { useForm } from 'react-hook-form'
 import { zodResolver } from '@hookform/resolvers/zod'
-import { showSubmittedData } from '@/lib/show-submitted-data'
+import { toast } from 'sonner'
 import { Button } from '@/components/ui/button'
 import {
   Form,
@@ -12,6 +13,7 @@ import {
   FormMessage,
 } from '@/components/ui/form'
 import { Input } from '@/components/ui/input'
+import { Textarea } from '@/components/ui/textarea'
 import { RadioGroup, RadioGroupItem } from '@/components/ui/radio-group'
 import {
   Sheet,
@@ -23,6 +25,8 @@ import {
   SheetTitle,
 } from '@/components/ui/sheet'
 import { SelectDropdown } from '@/components/select-dropdown'
+import { createTaskInSupabase, updateTaskInSupabase } from '@/lib/tasks-service'
+import { useTasks } from './tasks-provider'
 import { type Task } from '../data/schema'
 
 type TaskMutateDrawerProps = {
@@ -33,9 +37,10 @@ type TaskMutateDrawerProps = {
 
 const formSchema = z.object({
   title: z.string().min(1, 'Title is required.'),
-  status: z.string().min(1, 'Please select a status.'),
-  label: z.string().min(1, 'Please select a label.'),
-  priority: z.string().min(1, 'Please choose a priority.'),
+  description: z.string().optional(),
+  status: z.enum(['todo', 'in progress', 'done', 'canceled', 'backlog']),
+  label: z.enum(['bug', 'feature', 'documentation']).optional(),
+  priority: z.enum(['low', 'medium', 'high', 'critical']),
 })
 type TaskForm = z.infer<typeof formSchema>
 
@@ -45,22 +50,63 @@ export function TasksMutateDrawer({
   currentRow,
 }: TaskMutateDrawerProps) {
   const isUpdate = !!currentRow
+  const { onTasksChange } = useTasks()
+  const [isSubmitting, setIsSubmitting] = useState(false)
 
   const form = useForm<TaskForm>({
     resolver: zodResolver(formSchema),
-    defaultValues: currentRow ?? {
-      title: '',
-      status: '',
-      label: '',
-      priority: '',
-    },
+    defaultValues: currentRow
+      ? {
+          title: currentRow.title,
+          description: currentRow.description || '',
+          status: currentRow.status,
+          label: currentRow.label || undefined,
+          priority: currentRow.priority,
+        }
+      : {
+          title: '',
+          description: '',
+          status: 'todo',
+          label: undefined,
+          priority: 'medium',
+        },
   })
 
-  const onSubmit = (data: TaskForm) => {
-    // do something with the form data
-    onOpenChange(false)
-    form.reset()
-    showSubmittedData(data)
+  const onSubmit = async (data: TaskForm) => {
+    try {
+      setIsSubmitting(true)
+
+      if (isUpdate && currentRow) {
+        await updateTaskInSupabase(currentRow.id, {
+          title: data.title,
+          description: data.description,
+          status: data.status,
+          label: data.label,
+          priority: data.priority,
+        })
+        toast.success('Task updated successfully')
+      } else {
+        await createTaskInSupabase({
+          title: data.title,
+          description: data.description,
+          status: data.status,
+          label: data.label,
+          priority: data.priority,
+        })
+        toast.success('Task created successfully')
+      }
+
+      onOpenChange(false)
+      form.reset()
+      onTasksChange?.()
+    } catch (error) {
+      console.error('Failed to save task:', error)
+      toast.error(
+        isUpdate ? 'Failed to update task' : 'Failed to create task'
+      )
+    } finally {
+      setIsSubmitting(false)
+    }
   }
 
   return (
@@ -68,7 +114,7 @@ export function TasksMutateDrawer({
       open={open}
       onOpenChange={(v) => {
         onOpenChange(v)
-        form.reset()
+        if (!v) form.reset()
       }}
     >
       <SheetContent className='flex flex-col'>
@@ -102,6 +148,23 @@ export function TasksMutateDrawer({
             />
             <FormField
               control={form.control}
+              name='description'
+              render={({ field }) => (
+                <FormItem>
+                  <FormLabel>Description</FormLabel>
+                  <FormControl>
+                    <Textarea
+                      {...field}
+                      placeholder='Enter a description (optional)'
+                      rows={4}
+                    />
+                  </FormControl>
+                  <FormMessage />
+                </FormItem>
+              )}
+            />
+            <FormField
+              control={form.control}
               name='status'
               render={({ field }) => (
                 <FormItem>
@@ -109,13 +172,13 @@ export function TasksMutateDrawer({
                   <SelectDropdown
                     defaultValue={field.value}
                     onValueChange={field.onChange}
-                    placeholder='Select dropdown'
+                    placeholder='Select status'
                     items={[
-                      { label: 'In Progress', value: 'in progress' },
-                      { label: 'Backlog', value: 'backlog' },
                       { label: 'Todo', value: 'todo' },
-                      { label: 'Canceled', value: 'canceled' },
+                      { label: 'In Progress', value: 'in progress' },
                       { label: 'Done', value: 'done' },
+                      { label: 'Canceled', value: 'canceled' },
+                      { label: 'Backlog', value: 'backlog' },
                     ]}
                   />
                   <FormMessage />
@@ -127,7 +190,7 @@ export function TasksMutateDrawer({
               name='label'
               render={({ field }) => (
                 <FormItem className='relative'>
-                  <FormLabel>Label</FormLabel>
+                  <FormLabel>Label (Optional)</FormLabel>
                   <FormControl>
                     <RadioGroup
                       onValueChange={field.onChange}
@@ -136,11 +199,9 @@ export function TasksMutateDrawer({
                     >
                       <FormItem className='flex items-center'>
                         <FormControl>
-                          <RadioGroupItem value='documentation' />
+                          <RadioGroupItem value='bug' />
                         </FormControl>
-                        <FormLabel className='font-normal'>
-                          Documentation
-                        </FormLabel>
+                        <FormLabel className='font-normal'>Bug</FormLabel>
                       </FormItem>
                       <FormItem className='flex items-center'>
                         <FormControl>
@@ -150,9 +211,11 @@ export function TasksMutateDrawer({
                       </FormItem>
                       <FormItem className='flex items-center'>
                         <FormControl>
-                          <RadioGroupItem value='bug' />
+                          <RadioGroupItem value='documentation' />
                         </FormControl>
-                        <FormLabel className='font-normal'>Bug</FormLabel>
+                        <FormLabel className='font-normal'>
+                          Documentation
+                        </FormLabel>
                       </FormItem>
                     </RadioGroup>
                   </FormControl>
@@ -172,6 +235,12 @@ export function TasksMutateDrawer({
                       defaultValue={field.value}
                       className='flex flex-col space-y-1'
                     >
+                      <FormItem className='flex items-center'>
+                        <FormControl>
+                          <RadioGroupItem value='critical' />
+                        </FormControl>
+                        <FormLabel className='font-normal'>Critical</FormLabel>
+                      </FormItem>
                       <FormItem className='flex items-center'>
                         <FormControl>
                           <RadioGroupItem value='high' />
@@ -200,10 +269,12 @@ export function TasksMutateDrawer({
         </Form>
         <SheetFooter className='gap-2'>
           <SheetClose asChild>
-            <Button variant='outline'>Close</Button>
+            <Button variant='outline' disabled={isSubmitting}>
+              Close
+            </Button>
           </SheetClose>
-          <Button form='tasks-form' type='submit'>
-            Save changes
+          <Button form='tasks-form' type='submit' disabled={isSubmitting}>
+            {isSubmitting ? 'Saving...' : 'Save changes'}
           </Button>
         </SheetFooter>
       </SheetContent>
